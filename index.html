@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Гид по Пхукету</title>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth-compat.js"></script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Гид по Пхукету">
@@ -134,7 +137,7 @@
 <div id="app">
   <header>
     <div id="header-top">
-      <h1>🌴 Гид по Пхукету <span style="font-size:9px;color:#c7ccd4;font-weight:400;">build 8 (новый артефакт)</span></h1>
+      <h1>🌴 Гид по Пхукету <span style="font-size:9px;color:#c7ccd4;font-weight:400;">Firebase-версия</span></h1>
       <button id="admin-badge" title="Профиль / админ">👤</button>
     </div>
     <div id="search-row">
@@ -311,7 +314,7 @@ function catEmoji(cat){ for (const [re,e] of ICON_RULES) if (re.test(cat)) retur
 const DISTRICTS = ['Ката','Карон','Банг Тао','Камала','Найтон','Наянг','Чалонг','Раваи','Патонг','Вичит','Панва','Пхукет Таун','Другое'];
 
 const STORAGE_KEY = 'phuket-guide-list-v1';
-const ADMIN_PASSWORD = '1234567';
+// Пароль администратора теперь не хранится в коде — вход идёт через Firebase Authentication.
 let state = { categories: [], places: [], counter: 1, seeded: false };
 let isAdmin = false;
 let openSections = new Set();
@@ -330,37 +333,74 @@ function showToast(msg, ms){
   toastTimer = setTimeout(()=>mapToast.classList.remove('show'), ms || 3200);
 }
 
+// ---------- Firebase setup ----------
+// Вставь сюда свой конфиг из Firebase Console → Project Settings → Your apps → SDK setup and configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyB1-7Yl_z6ql6fU67w66wkFT40ezlnOOHk",
+  authDomain: "phuket-guide.firebaseapp.com",
+  projectId: "phuket-guide",
+  storageBucket: "phuket-guide.firebasestorage.app",
+  messagingSenderId: "476782802477",
+  appId: "1:476782802477:web:23f243ecc9b4b155d46aa4"
+};
+let db = null;
+let auth = null;
+let firebaseReady = false;
+try{
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  auth = firebase.auth();
+  firebaseReady = true;
+}catch(e){
+  console.error('Firebase init failed — проверь firebaseConfig', e);
+}
+const SHARED_DOC = db ? db.collection('phuket-guide').doc('shared') : null;
+
+// Firebase Auth сам решает, кто админ — сервер (Firestore rules) проверяет это
+// на своей стороне, поэтому запись физически недоступна без входа, а не просто скрыта в интерфейсе.
+if (auth){
+  auth.onAuthStateChanged(user => {
+    isAdmin = !!user;
+    refreshAdminUI();
+  });
+}
+
 // ---------- Storage ----------
 const syncBadge = document.getElementById('sync-badge');
 let badgeTimer=null, debounceTimer=null, saveInFlight=false, saveQueued=false, saveFailCount=0, syncDisabled=false;
 
 async function loadPersonalData(){
-  try{
-    const r = await window.storage.get('phuket-guide-admin', false);
-    if (r && r.value === 'true') isAdmin = true;
-  }catch(e){}
+  // Ничего не нужно грузить вручную — Firebase Auth сам восстанавливает сессию
+  // и вызовет onAuthStateChanged выше, если человек уже был залогинен.
 }
 function saveAdminFlag(){
-  window.storage.set('phuket-guide-admin', isAdmin ? 'true' : 'false', false).catch(()=>{});
+  // Не нужно — Firebase Auth сам хранит сессию входа.
 }
 async function loadFromStorage(){
+  if (!firebaseReady){ syncDisabled = true; return; }
   try{
-    const result = await window.storage.get(STORAGE_KEY, true);
-    if (result && result.value){
-      const data = JSON.parse(result.value);
-      state = Object.assign({categories:[], places:[], counter:1, seeded:false}, data);
+    const snap = await SHARED_DOC.get();
+    if (snap.exists){
+      const data = snap.data();
+      if (data && data.json){
+        const parsed = JSON.parse(data.json);
+        state = Object.assign({categories:[], places:[], counter:1, seeded:false}, parsed);
+      }
     }
-  }catch(e){}
+  }catch(e){
+    console.error('Firestore load failed', e);
+  }
 }
 async function saveToStorage(){
-  if (syncDisabled) return;
+  if (syncDisabled || !firebaseReady) return;
   if (saveInFlight){ saveQueued = true; return; }
   saveInFlight = true;
   syncBadge.classList.add('show'); syncBadge.textContent='Сохраняю…';
   try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify(state), true);
+    await SHARED_DOC.set({ json: JSON.stringify(state), updatedAt: Date.now() });
     saveFailCount = 0;
   }catch(e){
+    console.error('Firestore save failed', e);
     saveFailCount++;
     if (saveFailCount<=5){ saveQueued=true; }
     else { syncDisabled=true; }
@@ -722,16 +762,24 @@ document.getElementById('admin-badge').addEventListener('click', ()=>{
 });
 window.toggleAdminPrompt = function(){
   if (isAdmin){
-    isAdmin=false; saveAdminFlag(); refreshAdminUI();
+    auth.signOut();
     showToast('Вы вышли из режима администратора');
     closeModal();
   } else {
-    openPassword('Вход администратора','Введите пароль, чтобы редактировать гид.', (value)=>{
-      if (value===ADMIN_PASSWORD){
-        isAdmin=true; saveAdminFlag(); refreshAdminUI();
-        showToast('Вы вошли как администратор');
-      } else {
-        showToast('Неверный пароль');
+    openModal({
+      title: 'Вход администратора',
+      desc: 'Email из Firebase Authentication → Users',
+      placeholder: 'you@example.com',
+      confirmLabel: 'Далее',
+      onConfirm: (email) => {
+        email = (email||'').trim();
+        if (!email){ return; }
+        openPassword('Пароль', 'Пароль для '+email, (password)=>{
+          if (!password){ return; }
+          auth.signInWithEmailAndPassword(email, password)
+            .then(()=>{ showToast('Вы вошли как администратор'); })
+            .catch((err)=>{ showToast('Не удалось войти: '+(err.code||err.message)); });
+        });
       }
     });
   }
