@@ -635,6 +635,20 @@ function setPriceChoice(val){
 function refreshCategoryOptions(){
   catOptions.innerHTML = state.categories.map(c=>`<option value="${escapeHtml(c)}"></option>`).join('');
 }
+function openModal({title, desc, placeholder, defaultValue, confirmLabel, onConfirm}){
+  modalMode='simple'; editingId=null;
+  modalTitle.textContent=title; modalDesc.textContent=desc;
+  nameBlock.style.display='block'; urlBlock.style.display='none'; bookingBlock.style.display='none'; priceBlock.style.display='none'; catBlock.style.display='none'; districtBlock.style.display='none'; tagsFieldBlock.style.display='none'; commentBlock.style.display='none';
+  document.querySelector('#modal-name-block .field-label').textContent='Название';
+  nameInput.type='text';
+  nameInput.placeholder=placeholder||'';
+  nameInput.value=defaultValue||'';
+  cbConfirmOnly=onConfirm;
+  modalConfirm.textContent=confirmLabel||'ОК';
+  overlay.classList.add('show');
+  setTimeout(()=>{nameInput.focus(); nameInput.select();},50);
+}
+
 function openAddForm(defaultCat){
   if (!isAdmin){ showToast('Редактировать гид может только администратор'); return; }
   modalMode='place'; editingId=null;
@@ -733,6 +747,11 @@ modalConfirm.addEventListener('click', function(){
     closeModal();
     if (cb) cb();
   } else if (modalMode==='password'){
+    const value = nameInput.value;
+    const cb = cbConfirmOnly; cbConfirmOnly=null;
+    closeModal();
+    if (cb) cb(value);
+  } else if (modalMode==='simple'){
     const value = nameInput.value;
     const cb = cbConfirmOnly; cbConfirmOnly=null;
     closeModal();
